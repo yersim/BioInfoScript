@@ -10,3 +10,6 @@ Include the following folders:
 
 - **mOTUs**:
   Script for running mOTUs profiler. From the Sunagawa lab: https://motu-tool.org/ or see GitHub: https://github.com/motu-tool/mOTUs
+
+- **Preprocessing**:
+Script for cleaning shotgun metagenomic sequencing data with FastP and remove host DNA sequences with Bowtie2.
