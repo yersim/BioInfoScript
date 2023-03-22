@@ -2,7 +2,7 @@
 BioInformatic script for microbiome study
 
 Include the following folders:
-- BioBakery:
+- **BioBakery**:
   Script for running the different biobakery tools from the Huttenhower Lab set of bioinformatic tools. See GitHub: https://github.com/biobakery/biobakery or webpage: https://huttenhower.sph.harvard.edu/tools/
 
 - RScript:
