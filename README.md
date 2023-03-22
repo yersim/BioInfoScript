@@ -13,3 +13,6 @@ Include the following folders:
 
 - **Preprocessing**:
 Script for cleaning shotgun metagenomic sequencing data with FastP and remove host DNA sequences with Bowtie2.
+
+- **SRA**
+Scripts for downloading publicly available sequencing data from NCBI SRA run selector.
