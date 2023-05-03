@@ -1,0 +1,763 @@
+
+This script contains examples of processing and analysis on a phyloseq object create after following the script 16S_table_to_phyloseq.Rmd
+It gives an overview and code to obtain results from 16S rRNA amplicon sequencing data that have been pre-processed with DADA2.
+
+The code in the different chunks are meant to be copy/past in one's analysis and adapted for one's purpose.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Libraries need to be installed before they can be loaded in R studio
+You will need BiocManager if it is not yet installed run the following:
+```{r}
+#if (!require("BiocManager", quietly = TRUE))
+ #   install.packages("BiocManager")
+#BiocManager::install(version = "3.15")
+
+#Then install each package with:
+# BiocManager::install("package name")
+# or if not part of BiocManager:
+# install.packages("package name")
+```
+
+Librarie that might need to be necessary depending of the analysis one wants to do
+#Loading library
+```{r}
+library(Biostrings)
+library(devtools)
+library(phyloseq)
+library(tidyr)
+library(plyr)
+library(readxl)
+library(dplyr)
+library(stringr)
+library(ggplot2)
+library(vegan)
+library(microbiome)
+library(ape)
+library(ggpubr)
+library(ggsignif)
+library(ggprism)
+library(pheatmap)
+library(picante)
+library(magrittr)
+library(clusterCrit)
+library(RColorBrewer)
+library(ggcorrplot)
+library(VennDiagram)
+```
+
+The following chunks need a phyloseq object (here called physeq) containing at least an otu_table, tax_table and sample_data
+A phylogenetic tree might be necessary for some analysis!
+
+N.B. if one doesn't want to use the phyloseq object, the phyloseq can be transformed (melt) into a large table using the following:
+```{r}
+physeq_melt <- psmelt(physeq)
+```
+
+The first step is to filter the unwanted taxa out of the phyloseq
+# Filtering
+```{r}
+# Filter the dataset to keep only relevant data
+get_taxa_unique(physeq, "Kingdom")  ##ex: Bacteria, Archaea, unassigned and Eukaryota
+
+# filter out Unassigned, Chloroplast, Mitochondria and Eukaryota and others
+physeq_filtered <- physeq %>%
+  subset_taxa(Family != "Mitochondria") %>%
+  subset_taxa(Order != "Chloroplast") %>%
+  subset_taxa(Kingdom !="Unassigned") %>%
+  subset_taxa(Kingdom != "Eukaryota")
+```
+
+Instead of working with ASV counts, the relative abundance can be obtained using the following:
+(Be aware that some function and code presented later need count instead of relative abundance)
+# Relative abundance
+```{r}
+# Relative abundance allows to normalize
+physeq_ra <- transform_sample_counts(physeq_filtered, function(x) x / sum(x))
+```
+
+#Subset the phyloseq 
+For example, several groups (countries, controls, etc)
+Usefull if one want to analyze a subset of the whole dataset
+```{r}
+# Subset based on metadata info such as a groups (samples separated in group 1 and 2 for example)
+# physeq 1
+physeq_1 <- subset_samples(physeq_filtered, Group=="1")
+physeq_1 # X samples
+# Removing taxa with abundance 0
+physeq_1 <- prune_taxa(taxa_sums(physeq_1)> 0, physeq_1)
+# Relative abundance
+physeq_1 <- transform_sample_counts(physeq_1, function(x) x / sum(x))
+physeq_1 # see what is inside now 
+```
+
+
+# Barplot and Smoothing
+```{r}
+# group 1
+# Scale fill manula can be remove if we want to default colors
+pdf("BarPlot_RelativeAbundance_Group1.pdf", width = 10)
+plot_bar(physeq_ra, fill = "Phylum") +
+  theme_bw() + 
+  ggtitle("Relative abundance in group 1 samples: Phylum level") +
+  ylab("Relative abundance")
+dev.off()
+
+# Taxa prevalence in group 1
+pdf("TaxPrevalence_group1.pdf", width = 10)
+plot_taxa_prevalence(physeq_ra, "Phylum") +
+  ggtitle("Taxa prevalence in group 1 samples: Phylum level")
+dev.off()
+
+
+# Melt into a dataframe
+physeq_ra_melt <- psmelt(physeq_ra)
+
+# Plot each group next to each other
+pdf("BarPlot_RelativeAbundance_Phylum.pdf", width=20)
+physeq_ra_melt %>%
+  ggplot(aes_string(x = "Sample", y = "Abundance", fill = "Phylum")) +
+  geom_bar(stat = "identity", position = "stack") + 
+  theme_bw() + 
+  facet_wrap(~Group, scales = "free_x", nrow = 1) +
+  theme(legend.position = "bottom", axis.text.x =  element_text(angle = 80, vjust = 0.5)) +
+  ggtitle("Relative abundance at the phylum level")
+dev.off()
+```
+
+Plotting at a different taxonomic level
+```{r}
+# Agglomerate at selected level, select top 10 most abundant and prune subsets
+physeq_fam <- tax_glom(physeq_ra, taxrank = "Family")
+Top10_fam <- names(sort(taxa_sums(physeq_fam), TRUE)[1:10])
+physeq_fam <- prune_taxa(Top10_fam, physeq_fam)
+
+## Plots 
+pdf("BarPlot_RelativeAbundance_Top10Fam.pdf", width = 10)
+plot_bar(physeq_fam, fill = "Family") +
+  scale_fill_brewer(palette = "Paired") +
+  theme_bw() + 
+  ggtitle("Relative abundance Top 10 families") +
+  ylab("Reltive abundance")
+dev.off()
+
+# The above can be modify for any taxonomix rank
+```
+
+Select specific taxa
+For human stool samples
+Code can be reused for any specific taxa at any specific rank
+## Families
+```{r}
+# Save a new phylsoeq
+physeq_sub <- physeq_rel
+# Smooth at a tax rank
+physeq_sub <- tax_glom(physeq_sub, "Family")
+# Subset specific taxa at the right tax rank
+physeq_sub <- subset_taxa(physeq_sub, Family =="Prevotellaceae" | Family == "Spirochaetaceae"| Family == "Succinivibrionaceae" |
+                         Family == "Akkermansiaceae" | Family == "Bacteroidaceae"| Family == "Enterobacteriaceae")
+# Melt
+physeq_sub <- psmelt(physeq_sub)
+
+## Boxplot
+pdf("Subset_taxa_barplot.pdf")
+ggplot(physeq_sub, aes(x = Group, y = Abundance)) +
+  geom_boxplot() +
+  geom_point(aes(color = Group)) +
+  facet_wrap(~Family) +
+  theme_bw() +
+  geom_signif(comparisons = list(c("Group1","Group2")),
+              map_signif_level = TRUE,
+              y_position = 1) +
+  ylab("Relative abundance")
+dev.off()
+```
+
+# Alpha diversity
+Alpha diversity can be analyszed with the following set of chunks
+Rarefaction is done to have all the samples at the same library size
+# Rarefaction
+```{r}
+# Need to be done on the filtered phyloseq and not the relative abundance phyloseq
+
+# Resample an OTU table such that all samples have the same library size
+# Sample size based on the min sample sums, can be set to 1'000 or higher
+set.seed(1024)
+physeq_rar <- rarefy_even_depth(physeq_filtered, sample.size = min(sample_sums(physeq_filtered)), replace = FALSE)
+physeq_rar 
+
+## Rarefaction curve
+# Comparison before and after rarefaction
+rarecurve(t(otu_table(physeq_filtered)), step=50, cex=0.5)
+
+rarecurve(t(otu_table(physeq_rar)), step=50, cex=0.5)
+```
+
+Faith's phylogenetic diversity
+A phylogenetic tree is necessary!!
+```{r}
+## Faith's phylogenetic diversity
+## Sum of the branch lengths pf a phylogenetic tree connecting all species
+# Calculate phylogenetic diveristy using pd() from picante package
+physeq_rar_pd <- physeq_rar
+faith_pd_rar <- pd(t(otu_table(physeq_rar_pd)), phy_tree(physeq_rar_pd), include.root = TRUE)
+
+# Adding PD and SR to sample metadata
+sample_data(physeq_rar_pd) <- cbind(sample_data(physeq_rar_pd), faith_pd_rar)
+
+# Then plot:
+# Phylogenetic diversity (with significance comparison)
+pdf(file = "phylogeneticdiversity.pdf", width = 12, height = 8)
+plot_faith_pd_rar <- ggplot(sample_data(physeq_rar_pd),aes(x = Group, y = PD)) +
+  geom_boxplot() +
+  geom_point(aes(color = Age)) +
+  theme_bw() +
+  ylab("Phylogenetic Diversity") +
+  ggtitle("Faith's phylogenetic Diversity according to Group") +
+  geom_signif(comparisons = list(c("Group1","Group2")),
+              map_signif_level = TRUE, y_position = c(875))
+plot_faith_pd_rar
+dev.off()
+
+# Test for differences
+# Wilcoxon rank test with Bonferonni corrections 
+d_pdrar = sample_data(physeq_rar_pd)
+Group1W_pdrar = faith_pd_rar[d_pdrar[,'Group']=='1',]
+Group2W_pdrar = faith_pd_rar[d_pdrar[,'Group']=='2',]
+
+p_val_wilcox_pd <- data.frame(Measure = c("PD"),
+                           Group = c(wilcox.test(Group1W_pdrar$PD, Group2W_pdrar$PD)$p.value))
+rownames(p_val_wilcox_pd) <- p_val_wilcox_pd[,1]
+p_val_wilcox_pd <- p_val_wilcox_pd[,-1]
+```
+
+Other alpha diversity measure such as Shannon, Chao1, InvSimpson are included in the estimate_richness() function and can be ploted using the plot_richness() function
+```{r}
+# Obtain alpha diversity index values:
+resultsalpha= estimate_richness(physeq_rar,measures = c("Observed", "Chao1", "Shannon", "InvSimpson"))
+
+# Plot alpha diversity:
+pdf(file = "alphadiversity.pdf")
+alpha_div_plot = plot_richness(physeq_rar, x= "Group",
+                               measures=c("Observed", "Chao1", "Shannon", "InvSimpson"),
+                               title = "Alpha Diversity at the ASVs level according to groups",
+                               color = "Group") +
+  geom_boxplot(aes(x = Group, y = value, color = NULL), alpha = 0.1) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+  xlab("Group") +
+  theme_bw()
+alpha_div_plot
+dev.off()
+
+# Test for differences
+# Wilcoxon rank test with Bonferonni corrections
+results = estimate_richness(physeq_rar)
+d = sample_data(physeq_rar)
+Group1W = results[d[,'Group']=='1',]
+Group2W = results[d[,'Group']=='2',]
+
+# Table with p.values
+p_val_wilcox <- data.frame(Measure = c("Chao1 ASV", "Shannon ASV"),
+                           Group = c(wilcox.test(Group1$Chao1, Group2W$Chao1)$p.value,
+                                        wilcox.test(Group1$Shannon, Group2W$Shannon)$p.value))
+rownames(p_val_wilcox) <- p_val_wilcox[,1]
+p_val_wilcox <- p_val_wilcox[,-1]
+```
+
+# Beta diversity
+# Pre-processing of the phyloseq
+```{r}
+physeq_pruned <- physeq_filtered
+# To remove singletons: 
+# How many singletons?
+length(which(taxa_sums(physeq_pruned)== 1))
+
+# prune taxa that are singletons
+physeq_pruned = prune_taxa(taxa_sums(physeq_pruned)> 1, physeq_pruned)
+length(which(taxa_sums(physeq_pruned)== 1))
+
+# Remove samples with sum abundance under 1000
+physeq_pruned = prune_samples(sample_sums(physeq_pruned)>= 1000, physeq_pruned)
+
+# Rarefaction of the pruned phyloseq
+set.seed(1024)
+physeq_pruned_rar <- rarefy_even_depth(physeq_pruned, sample.size = min(sample_sums(physeq_pruned)), replace = FALSE)
+summarize_phyloseq(physeq_pruned_rar)
+
+#Log transform
+# add pseudo count due to zero inflated data
+physeq_prl <- transform_sample_counts(physeq_pruned_rar, function(x) log(1+x))
+```
+
+## Distance
+Distance can be calculated with different methods: Bray-Curtis, Jaccard, UniFrac or WeightedUniFrac
+A tree is needed for UniFrac and WeightedUniFrac
+```{r}
+# Bray-Curtis
+dist.bc <- distance(physeq_prl, method = "bray")
+
+# Jaccard
+dist.jac <- distance(physeq_prl, method = "jaccard")
+
+# UniFrac
+dist.uf <- distance(physeq_prl, method = "unifrac")
+
+# Weighted UniFrac
+dist.wuf <- distance(physeq_prl, method = "wunifrac")
+```
+
+Distance plot
+```{r}
+# Or modify to "NMDS" instead of PCoA
+# Or modify to any distance from above instead of Bray Curtis
+test_PCoAbray <- ordinate(physeq_prl, "PCoA", distance = dist.bc)
+
+pdf("PCoA (Bray-Curtis distance).pdf")
+plot_ordination(physeq_prl, test_PCoAbray, type = "samples", color = "Group", shape = "Age") + 
+  theme_bw() +
+  scale_shape_manual(values=c(0:9)) +
+  scale_color_brewer(palette = "Paired") +
+  ggtitle("PCoA (Bray-Curtis distance)")
+dev.off()
+
+#Test distance between group of samples
+# here example using Weighted UniFrac
+meta_pcoa = as.matrix(sample_data(physeq_prl))
+meta_pcoa <- as.data.frame(meta_pcoa)
+# distance matrix
+distance_pcoa_wuf <- dist.wuf
+test_wuf <- vegan::adonis(distance_pcoa_wuf ~ Group, data = meta_pcoa)
+#p.value
+test_wuf$aov.tab$`Pr(>F)`[1] # 0.001
+# One group is significant, but which one?
+
+# What pair of samples are significantly different
+library(usedist)
+pairewise_p <- numeric()
+# Group 1 vs Group 2
+group_1_2 <- meta_pcoa %>%
+  filter(Group == "Group1" | Group == "Group2")
+group_1_2_dist <- dist_subset(distance_pcoa, group_1_2$fastqID)
+group_1_2_test <- adonis(group_1_2_dist ~ Group, 
+                       data = group_1_2, 
+                       permutations = 1000)
+pairewise_p["group_1_2"] <- group_1_2_test$aov.tab$`Pr(>F)`[1]
+# Can be done again for group 1 vs group 3, group 2 vs group 3, etc (copy/paste and modify names)
+# Correction for multiple comparison
+pairewise_padj <- p.adjust(pairewise_p, method = "BH")
+```
+
+Arrow plot
+PCoA with arrow fitted with the taxa names
+Table with samples and taxa names
+```{r}
+# table for arrow plot
+# Using rarefied without singletons
+# Apply log transform later
+physeq_arrow <- physeq_pruned_rar
+# OTU table 
+OTU_arr = as(otu_table(physeq_arrow), "matrix")
+otu_arr <- as.data.frame(OTU_arr)
+# Tax table
+TAX_arr = as(tax_table(physeq_arrow), "matrix")
+tax_arr <- as.data.frame(TAX_arr)
+# Metadata table
+META_arr = as(sample_data(physeq_arrow), "matrix")
+meta_arr <- as.data.frame(META_arr)
+
+tax_otu <-cbind(tax_arr, otu_arr)
+# Combine names from higher taxonomic level to avoid grouping unassigned together
+tax_otu[which(is.na(tax_otu[,6])==TRUE),6] <- str_c("Unassigned", '_', tax_otu[which(is.na(tax_otu[,6])==TRUE),5])
+tax_otu[which(is.na(tax_otu[,7])==TRUE),7] <- str_c("Unassigned", '_', tax_otu[which(is.na(tax_otu[,7])==TRUE),6])
+which(is.na(tax_otu[,1,7])==TRUE) # No NAs for taxa names
+tax_otu <-tax_otu[, -(1:5)]
+#Combine Genus and Species names
+tax_otu$Name <- str_c(tax_otu$Genus, '_', tax_otu$Species)
+
+# Modify 762 with last column of table!!
+tax_otu[, 762] <- as.character(tax_otu[, 762])
+length(unique(tax_otu[,762])) # 804 unique species
+# Assign rownames as genus_species names
+rownames(tax_otu) <- tax_otu[,762]
+tax_otu <- tax_otu[,-c(1:2,762)] # remove column with names
+#Transpos to have column as Species and rows as samples
+tax_otu <- t(tax_otu)
+
+# Now table with column being unique species, rows being each sample, each cases contains abundance
+class(tax_otu) <- "numeric"
+tax_otu <- as.data.frame(tax_otu)
+
+# No NAs in the dataset
+length(which(is.na(tax_otu)==TRUE))
+tax_otu[is.na(tax_otu)] <- 0 #convert NAs to zeros
+```
+
+Arrow plot with Bray-Curtis
+Can be adapted with other distances!
+The envfit() function can be really long to run!!
+```{r}
+## PCoA
+    # First step is to calculate a distance matrix. 
+    # Here we use Bray-Curtis distance metric
+# Log transform (automatically use 1+x in log to deal with 0)
+# Modify 805 (number of column in tax_otu)
+tax_otu_log <-transform(tax_otu[, 1:805], 'log10')
+# distance matrix
+dist <- vegdist(tax_otu[, 1:805],  method = "bray")
+
+# PCoA is not included in vegan. 
+# We will use the ape package instead (pcoa())
+PCOA <- pcoa(dist)
+
+# plot the eigenvalues and interpret
+#barplot(PCOA$values$Relative_eig[1:10])
+#biplot.pcoa(PCOA)
+#biplot.pcoa(PCOA, tax_otu_log[, 1:20], scale.=F, center=T)
+
+# Save vectors axis 1 and 2 values from the PCoA, rows are samples
+vectorPCOA <- cbind(PCOA$vectors[, 1:2])
+
+#### Include species level Abundances in Ordination 
+# Fits an environmental vector or factor onto an ordination
+# Here the ordination object is the two vector from the PCoA
+# The env (data frame of environmental variables) is the tax_otu_log table
+env.fit <- envfit(vectorPCOA, tax_otu_log[,1:805], perm = 999) 
+
+# look at p-values of different taxa
+env.fit
+# Contain fitted score for each species (axis 1 and 2)
+env.fit.sig  <- as.data.frame(scores(env.fit, display = "vectors"))
+
+#### Extracting significant pvalues from envfit taxa
+    #shortcutting ef$vectors
+A <- as.list(env.fit$vectors)
+#creating the dataframe
+pvals <-as.data.frame(A$pvals)
+## arrows coordinate
+arrows <- as.data.frame(A$arrows*sqrt(A$r))
+C <- cbind(arrows, pvals)
+# Save table
+write.table(C,"Envfit_arrowsAxis_pVal.txt",sep="\t",row.names=FALSE)
+
+#subset: select pval <= 0.001 to select significant species
+Cred <- subset(C, pvalsMI <= 0.001)
+Cred <- cbind(Cred, species = rownames(Cred))
+
+arr_pvals_c <- Cred %>%
+  mutate(Coord = (Axis.1*Axis.1)+(Axis.2*Axis.2))
+arr_pvals_c[,5] <- as.numeric(arr_pvals_c[,5])
+# Sub selection important taxa
+arr_pval_sub <- arr_pvals_c %>%
+  filter(Coord > .2)
+
+#### Format taxa scores for plotting
+df_envfit <- scores(env.fit,display=c("vectors"))
+df_envfit <- df_envfit*vegan:::ordiArrowMul(df_envfit)
+df_envfit <- as.data.frame(df_envfit)
+df_envfit$species <- rownames(df_envfit)
+# All species significant
+df_envfit <- df_envfit %>% 
+  filter(species %in% Cred$species)
+#Subselection
+df_envfit <- df_envfit %>% 
+  filter(species %in% arr_pval_sub$species)
+
+  #### Get PCOA scores of axis 1 and 2 for each sample
+nrow(meta_arr) #759
+nrow(vectorPCOA)
+
+# Use the score returned by the PCoA
+ft.scores <- as.data.frame(vectorPCOA)
+ft.scores$fastqID <- rownames(tax_otu)
+# Verify same number of samples
+which(rownames(meta_arr) != rownames(ft.scores))
+
+# Paste metadata to PCoA scores for plotting
+ft.scores$Country <- meta_arr$Country
+ft.scores$Subsistence <- meta_arr$Subsistence
+
+  # get distinct rows
+ft.scores.d <- distinct(ft.scores)
+    
+# Percentage explain on axis
+per_explained <- 100*PCOA$values$Relative_eig / sum(PCOA$values$Relative_eig)
+per_explained <- round(per_explained[1:2], digits = 1)
+per_explained[1:2]
+# Axis 1: 14.8%  Axis 2: 10.6%
+library(glue)
+labs <- c(glue("Axis1 [{per_explained[1]}%]"),
+          glue("Axis2 [{per_explained[2]}%]"))
+labs
+
+# ft.score.d contain sample PCoA scores for axis 1 and 2
+# df.envfit contain species score for axis 1 and 2
+pdf("arrow_BC.pdf", width = 20, height = 15)
+ggplot() +
+      geom_point(aes(ft.scores.d$Axis.1,ft.scores.d$Axis.2, colour =ft.scores.d$Country, shape = ft.scores.d$Country)) + 
+      geom_segment(aes(x = 0, y = 0, xend = df_envfit.mi$Axis.1*0.5,
+                 yend = df_envfit$Axis.2*0.5),
+            arrow = arrow(length = unit(0.2, "cm")),color="#808080",alpha=0.5) +
+      geom_text(aes(df_envfit$Axis.1*0.5, df_envfit$Axis.2*0.5, label = df_envfit$species),
+              color="#808080",alpha=0.5) +
+    ggtitle("Taxa driving clustering using Bray Curtis distance and PCoA") +
+    xlab(labs[1]) +
+    ylab(labs[2]) +
+    labs(colour = "Group", shape = "Age") +
+    theme_bw()
+dev.off()
+
+
+## Adding ellipses
+# 1 add centroid point
+str(PCOA)
+# Two first axis of our PCOA
+PCOA$vectors[,c(1,2)]
+# Already added in the ft.scores.d variables
+centroid <- ft.scores.d %>%
+  group_by(Group) %>%
+  summarise(axis1 = mean(Axis.1),
+            axis2 = mean(Axis.2), .groups = "drop")
+# Add centroid and ellipses
+pdf("arrow_BC_ellipse.pdf", width = 20, height = 15)
+ggplot(ft.scores.d) +
+    geom_point(mapping= aes(x=Axis.1,y=Axis.2,
+                   colour =Country, shape = Country)) + 
+    stat_ellipse(mapping = aes(x=Axis.1,y=Axis.2,
+                   colour =Country, fill=Country),
+                 geom = "polygon", alpha = 0.2, show.legend = FALSE) +
+    geom_segment(data=df_envfit, mapping =  aes(x = 0, y = 0, xend = Axis.1*0.5,
+                   yend = Axis.2*0.5),
+               arrow = arrow(length = unit(0.2, "cm")),color="#808080",alpha=0.5) +
+   geom_point(data=centroid, mapping=aes(x=axis1, y= axis2, color = Country),
+             shape = 19, size = 4, show.legend = FALSE) +
+    geom_text(data=df_envfit,mapping =  aes(x =Axis.1*0.52, y=Axis.2*0.52, label = species),
+                color="#808080",alpha=0.5) +
+  ggtitle("Taxa driving clustering using BrayCurtis distance and PCoA") +
+  xlab(labs[1]) +
+  ylab(labs[2]) +
+  labs(colour = "Group", shape = "Age") +
+  theme_bw()
+dev.off()
+```
+
+
+# Clustering
+Merge closest group
+Update distances between sets of group using linkage function
+Repeat until all communities have been merged 
+Clustering is based on the whole distance whereas ordination represents parts of the distance (2 in most cases)
+Adapt carefully the code
+
+heatmap
+```{r}
+# Prepare table
+#In this case, clustering at the species level 
+physeq_hm <- tax_glom(physeq_ra, "Species", NArm = FALSE)
+
+##Extract datasets from the phyloseq
+OTUhm = as.data.frame(otu_table(physeq_hm))
+TAXhm = as.data.frame(tax_table(physeq_hm))
+METAhm = as.data.frame(sample_data(physeq_hm))
+reads <-cbind(TAXhm, OTUhm)
+
+# Change NAs in Unassigned genus and species
+reads[which(is.na(reads[,6])==TRUE),6] <- str_c("Unassigned", '_', reads[which(is.na(reads[,6])==TRUE),5])
+reads[which(is.na(reads[,7])==TRUE),7] <- str_c("Unassigned", '_', reads[which(is.na(reads[,7])==TRUE),6])
+
+# Keep only column with the desired taxonomic rank
+reads <-reads[, -(1:5)]
+reads$Name <- str_c(reads$Genus, '_', reads$Species)
+reads[, 762]<-as.character(reads[, 762])
+reads[, 762]<-make.unique(reads[, 762]) # Now unique species name
+rownames(reads) <- reads[,762] #assign rownames as species names
+reads <- reads[,-c(1,2,762)] # remove column with names
+reads <- t(reads) # transpose as we want columns with taxa names and rows with samples names 
+# Rows are samples because distance function do the distance on the rows
+# Now table with column being unique taxa, rows being each sample, each cases contains abundance
+# copy into a new table
+reads_hm <- reads
+
+## ready for:
+# hierarchical clustering using Ward D linkage 
+### Method:use the squared sum deviation of the group against the center of the group resulting of the fusion of the two groups
+## distance: default is euclidiean, other possibility:  "jensen-shannon" 
+## using vegdist(reads, method="jensen-shannon", useShrinkage = TRUE)
+hc=hclust(dist(reads_hm),method="ward.D")
+plot(hc, hang=-1)
+# hang is the fraction of the plot height by which labels should hang below the rest of the plot
+# Save as dendogram
+dend=as.dendrogram(hc)
+
+# create a numeric vector 
+CH <- vector("numeric", 9L)
+# Calinski-Harabasz index: ratio between variance between group and variance inside each group
+# Goal: high inter group and low intra group
+# Highest index is the one to select
+for (k in 2:10){
+      clrs=cutree(hc,k=k)
+      CH[k-1] = intCriteria(as.matrix(reads_hm),clrs,"all")$calinski_harabasz
+}
+
+# Plot the index for each value of k
+ggplot() +
+        geom_point(aes(x=c(2:10),y=CH)) +
+        geom_line(aes(x=c(2:10),y=CH)) +
+        xlab("Number of clusters (k)") +
+        ylab("Calinski-Harabasz index") +
+        theme_minimal()
+#Look at the plot and select optimal number of clusters
+# 2 clusters
+# The tree can be cut in the number of clusters
+nClrs=2
+#k is the number of clusters
+# return cluster number in which each samples belong to
+clrs=cutree(hc,k=nClrs)
+clrs <- as.data.frame(clrs)
+# attaching the clusters info to the table
+#Renaming clrs info as Cluster X instead of numbers
+clrs <- data.frame(Cluster = ifelse(test = clrs == 1, yes = "Cluster 1",no = "Cluster 2"))
+# Adding clusters to metadata dataframe
+METAhm <- cbind(METAhm, clrs)
+colnames(METAhm)[12] <- "Cluster"
+# Now we have the optimal number of cluster and each sample have the cluster to which it belongs to
+sample_data(physeq_hm) <- cbind(sample_data(physeq_hm), clrs)
+
+#Test significantly different abundance of taxa between two clusters
+physeq_hm_comp <- psmelt(physeq_hm)
+physeq_hm_comp[which(is.na(physeq_hm_comp[,21])==TRUE),21] <- str_c("Unassigned",
+                                                                '_', physeq_hm_comp[which(is.na(physeq_hm_comp[,21])==TRUE),20])
+physeq_hm_comp[which(is.na(physeq_hm_comp[,22])==TRUE),22] <- str_c("Unassigned",
+                                                                '_', physeq_hm_comp[which(is.na(physeq_hm_comp[,22])==TRUE),21])
+physeq_hm_comp$Name <- str_c(physeq_hm_comp$Genus, '_', physeq_hm_comp$Species)
+wil_test_hm <- physeq_hm_comp %>%
+  group_by(Name) %>%
+  mutate(pval = wilcox.test(Abundance ~ clrs, paired = F)$p.value)
+wil_test_hm['p.value_bonf'] <- wil_test_hm$pval * length(unique(wil_test_hm$Name))
+hm_sig <- unique(wil_test_hm[which(wil_test_hm$p.value_bonf < 0.05), "Name"])
+hm_sig
+clrs_wiltest <- wil_test_hm %>% 
+  dplyr::filter(p.value_bonf < 0.05) %>%
+  group_by(Name, pval, p.value_bonf) %>%
+  summarise(Comparison = "Cluster 1-2")
+write.csv(clrs_wiltest, "Cluster_WilcoxonBonfSignSpecies.csv")
+
+# Selecting based on clusters
+#realtive abundance for each dataset
+hm_cl1 <- subset_samples(physeq_hm, clrs=="Cluster 1")
+hm_cl2 <- subset_samples(physeq_hm, clrs=="Cluster 2")
+# Select x most abundant 
+Top_cl1 <- as.data.frame(names(sort(taxa_sums(hm_cl1), TRUE)[1:20]))
+Top_cl2 <- as.data.frame(names(sort(taxa_sums(hm_cl2), TRUE)[1:20]))
+# merging subest phyloseq - Species level agglomeration
+physeq_hm_ps1 <- physeq_hm
+
+##Extract datasets from the phyloseq
+# OTU table
+OTUhm_ps1 = as.data.frame(otu_table(physeq_hm_ps1))
+# Tax table
+TAXhm_ps1 = as.data.frame(tax_table(physeq_hm_ps1))
+reads_ps1 <-cbind(TAXhm_ps1, OTUhm_ps1)
+reads_ps1[which(is.na(reads_ps1[,6])==TRUE),6] <- str_c("Unassigned", '_', reads_ps1[which(is.na(reads_ps1[,6])==TRUE),5])
+reads_ps1[which(is.na(reads_ps1[,7])==TRUE),7] <- str_c("Unassigned", '_', reads_ps1[which(is.na(reads_ps1[,7])==TRUE),6])
+reads_ps1 <-reads_ps1[, -c(1:5)]
+reads_ps1$Name <- str_c(reads_ps1$Genus, '_', reads_ps1$Species)
+
+# Selecting significant ones
+reads_ps1 <- reads_ps1[which(reads_ps1$Name %in% hm_sig$Name),]
+# Selecting top
+reads_ps1 <- reads_ps1[which(rownames(reads_ps1) %in% Top_cl2$`names(sort(taxa_sums(hm_cl2), TRUE)[1:20])` |
+                    rownames(reads_ps1) %in% Top_cl1$`names(sort(taxa_sums(hm_cl1), TRUE)[1:20])`),]
+reads_ps1[,762] <-as.character(reads_ps1[, 762])
+rownames(reads_ps1) <- reads_ps1[,762] 
+reads_ps1 <- reads_ps1[,-c(1,2,762)]
+reads_ps1 <- as.matrix(reads_ps1)
+
+library(ComplexHeatmap)
+# Heatmap annotations
+column_hm = HeatmapAnnotation(ls = METAhm[,6], clst = METAhm[,12],
+                              col = list(ls=c("Group1" = pal_pcoa[1],
+                                              "Group2" = pal_pcoa[2],
+                                              "Group3" = pal_pcoa[3]),
+                                         clst = c("Cluster 1" = pal_clrs[9], 
+                                                  "Cluster 2" =pal_clrs[3])),
+                              annotation_label = c("Group","Clusters"))
+# Heatmap color
+library(circlize)
+col_fun <- colorRamp2(c(0,0.5,1), c("white", "red", "black"))
+col_fun(seq(-3,3))
+# Plot heatmap
+pdf("heatmap_topSig_clustered.pdf", width = 20, height = 7)
+Heatmap(reads_ps1, name = "Relative abundance",
+        col = col_fun,
+        row_title = "Taxa", cluster_rows = TRUE,
+        top_annotation = column_hm,
+        cluster_columns = function(m) as.dendrogram(hc),
+        show_column_names = FALSE, row_names_side = "left", row_names_max_width = max_text_width(rownames(reads_ps1), 
+        gp = gpar(fontsize = 12)))
+dev.off()
+```
+
+The different repartion of the samples from the group in the cluster can be tested with a chi-squared test
+```{r}
+# Add to the phyloseq metadata
+# Test only samples data, tax table do not matter
+physeq_chi <- physeq_hm
+names(sample_data(physeq_chi))[12] <- "Cluster"
+
+# Repeat code for other group
+# Count samples per group
+sample_data(physeq_chi)$nSample[sample_data(physeq_chi)$Group == "Group1"] <- length(which(sample_data(physeq_chi)$Group == "Group1")==TRUE)
+# Metadata table
+md_hm = as(sample_data(physeq_chi), "matrix")
+md_hm <- as.data.frame(md_hm)
+chi_1 <- md_hm %>%
+  dplyr::filter(Group == "Group1")
+chi_1$nSample <- as.numeric(chi_1$nSample)
+#Percentage
+chi_1 <- chi_1 %>%
+  mutate(relCount = 100/nSample)
+
+md_hm <- rbind(chi_1, chi_2, chi_3)
+
+# Repeat code for other group
+chi_1 <- chi_1 %>% 
+  group_by(Group, Cluster) %>% 
+  summarise(Clust_per = sum(relCount))
+
+md_chi_group <- rbind(chi_1, chi_2, chi_3
+                      )
+# Balloon plot
+pdf("BallonPlot_specie.pdf", height = 4)
+ggplot(md_chi_group, aes(x=Group, y=Cluster)) +
+ geom_point(aes(size = Clust_per*1.1), colour = "lightgrey") +
+  geom_point(aes(size=Clust_per, col = Clust_per)) +
+  scale_size_continuous(range = c(0, 12)) +
+  scale_color_gradient(colors =rev(RColorBrewer::brewer.pal(9,"RdYlBu"))) +
+  geom_text(aes(label=round(Clust_per, digits = 1), y = Cluster), nudge_y = .1, colour = "darkgrey") +
+  theme_minimal()+
+  ylab("Percentage of samples in each cluster") +
+  theme(axis.text.x =  element_text(angle = 45, hjust = .9))
+dev.off()
+
+
+###Chi test
+chi.sq_group = table(md_hm$Group, md_hm$Cluster)
+# Change number of col and row to number of groups
+chisq_groups <- matrix(ncol = 11, nrow = 11)
+
+colnames(chisq_groups) <- rownames(chi.sq_group)
+rownames(chisq_groups) <- rownames(chi.sq_group)
+for (i in 1:11){
+  for (j in 1:11) {
+     chisq_groups[i,j] <- chisq.test(chi.sq_group[c(i,j),])$p.value
+      j= j+1
+     }
+  
+  i = i+1
+}
+# Save repartition and tests
+write.csv(chi.sq_group, "Group_clrs.csv")
+write.csv(chisq_groups, "Chitest_group.csv")
+```
