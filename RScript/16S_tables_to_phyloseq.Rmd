@@ -1,0 +1,226 @@
+This script include the different parts of the code to upload the 16S rRNA amplicon sequencing tables resulting from the DADA2 pipeline (see DADA2 template_PairedReads.Rmd) and obtain a complete phyloseq object to start subsequent analysis.
+
+The DADA2 pipeline save two important files for the following script:
+  1. The taxonomy table: taxonomy_table___PROJECT_NAME___.txt which rows correspond to an ASV and columns to the corresponding taxonomy assignement (down to ASV level)
+  2. The sequences table: sequence_table___PROJECT_NAME___.txt which columns correspond to an ASV and rows to the number of reads assigned to the ASV in each of the sample (each row is one sample)
+  
+To form the phyloseq object (see: https://joey711.github.io/phyloseq/), a metadata table is also needed. The metadata table contain information about the samples (such as name, origin of the sample, date of collection, etc).
+Additionally, a phylogenetic tree can be produce (see chunk 3) and included in the phyloseq (not always necessary).
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Loading libraries
+```{r}
+library(Biostrings)
+library(devtools)
+library(phyloseq)
+library(tidyr)
+library(plyr)
+library(readxl)
+library(dplyr)
+library(stringr)
+
+#Phylogenetic tree
+library(DECIPHER)
+library(phangorn)
+library(QsRutils)
+```
+
+# 1. Taxonomy table
+```{r}
+# tax contain the assigned taxonomy table
+# .txt file contain sequences and corresponding assigned species
+# Rank 1: Kingdom, 2: Phylum, 3: Class, 4: Order, 5: Family, 6: Genus, 7:Species
+tax = read.delim("taxonomy_table___PROJECT_NAME___.txt", header = TRUE, sep = "\t")
+
+#Add column with ASV# for each sequence, and column with sequences from the row names
+tax <- tax %>%
+  mutate(ASV = paste("ASV", seq(1:nrow(tax)), sep="")) %>%
+  mutate(SEQ = rownames(tax))
+
+# Assign row names as ASV number
+row.names(tax) <- tax$ASV
+
+# Check for duplicate in ASV names
+which(duplicated(row.names(tax))==TRUE)
+
+# Return integrer =(0) there are no duplicates in term of all variables
+# Correspondence dataframe contain first two column of tax : ASV : SEQ
+correspondence <- tax[,c(8:9)]
+
+# Change tax as matrix, remove SEQ columns
+tax=as.matrix(tax)
+tax <- tax[,-(8:9)]
+
+# Create taxonomy formal class taxonomy table for the phyloseq
+taxonomy <- tax_table(tax)
+``` 
+
+# 2. OTU table
+```{r}
+# Importing merged sequence table, contains ASV counts per samples 
+otu <- read.delim("sequence_table___PROJECT_NAME___.txt", header = TRUE, sep = "\t")
+
+# Transposition of OTU (matrix class) to have rows as sequences and columns as samples
+otu <- t(otu)
+otu_df <- as.data.frame(otu)
+
+# Setting row names as ASV# instead of full sequences
+row.names(correspondence) <- correspondence$SEQ
+
+# Bind together otu and correspondence 
+otu <- cbind(correspondence, otu)
+
+# Assign row names as ASV instead of sequences, then remove columns 1 and 2 containing sequences
+row.names(otu) <- otu$ASV
+otu <- otu[,-(1:2) ]
+
+# Class matrix and numerical values
+otu<-as.matrix(otu)
+class(otu) <- "numeric"
+
+#Create taxa formal class otu_table based on otu matrix for the phyloseq
+taxa = otu_table(otu, taxa_are_rows = TRUE)
+```
+
+# 3. Phylogenetic tree
+Phylogenetic tree construction adapted from: Callahan BJ, Sankaran K, Fukuyama JA et al. Bioconductor Workflow for Microbiome Data Analysis: from raw reads to community analyses [version 2; peer review: 3 approved]. F1000Research 2016, 5:1492 (https://doi.org/10.12688/f1000research.8986.2)
+
+!!! This procedure is long !!!
+```{r}
+# Start by performing a multiple-alignment using the DECIPHER package
+seqs <- correspondance$SEQ
+# This propagate to the tip labels of the tree
+names(seqs) <- seqs
+alignement <- AlignSeqs(DNAStringSet(seqs), anchor = NA)
+
+### phangorn is a package for phylogenetic reconstruction and analysis
+phang.align <- phyDat(as(alignement, "matrix"), type="DNA")
+
+# compute pairwise distances for an object of class phyDat
+dm <- dist.ml(phang.align)
+
+# Distance matrix 
+# performs the neighbor-joining tree estimation
+treeNJ <- NJ(dm) # Note, tip order != sequence order
+
+# computes the likelihood of a phylogenetic tree given a sequence alignment and a model
+fit = pml(treeNJ, data=phang.align)
+
+## negative edges length changed to 0!
+# pdate and (by default) re-fit a mode
+fitGTR <- update(fit, k=4, inv=0.2)
+
+#optimizes the different model parameters
+fitGTR <- optim.pml(fitGTR, model="GTR", optInv=TRUE, optGamma=TRUE,
+                      rearrangement = "stochastic", control = pml.control(trace = 0))
+pg_tree <- phy_tree(fitGTR$tree)
+
+# Change names from SEQ to ASV
+pg_tree2 <- pg_tree
+taxa_names(pg_tree2) <- correspondence$ASV
+```
+
+# 4. Metadata
+Metadata are a table containing information about the data, in this case the samples.
+Loading a excel table with the wanted information is the easiest way to load the metadata
+One can also create a table in R with the wanted information
+
+Important: the row name of the table need to correspond exactly to sample names in the sequence table!
+A column with the matching sample names are therefore needed in the metadata table.
+```{r}
+# Load data from excel
+md <- read_excel("metadata_table____PROJECT_NAME___.xlsx")
+md <- as.data.frame(md)
+
+# Assign row names as samples_name matching the column name of the sequence table!
+rownames(md) <- md$sampleID
+
+# Create a sample_data phyloseq object
+metadata <- sample_data(md)
+```
+
+# Phyloseq creation
+```{r}
+# Phyloseq object creation from the sequence and taxonomy tables
+physeq= phyloseq(taxa, taxonomy)
+
+# Add phylo tree
+physeq_phylo <- merge_phyloseq(physeq, pg_tree2)
+
+# Rooting tree
+physeq <- root_phyloseq_tree(physeq_phylo)
+
+# Add metadata in the phyloseq object
+physeq = merge_phyloseq(metadata, physeq)
+```
+
+From there, all the tables (sequences table, taxonomy table, phylogenetic tree, metadata) are stored in a phyloseq object called "physeq"
+ 
+Here are a few function implemented in the phyloseq package to acccess the information in the tables:
+
+# Phyloseq exploration
+```{r}
+## Can be skiped if you are already familiarized with phyloseq and its functions
+summarize_phyloseq(physeq)
+
+# Visualize:
+physeq
+
+# Access specific table
+#sample_data(physeq)
+#tax_table(physeq)
+#otu_table(physeq)
+#phy_tree(physeq)
+
+## accession functions
+# Number of taxa in phyloseq
+ntaxa(physeq)
+# Number of samples in phyloseq
+nsamples(physeq)
+# Samples names
+sample_names(physeq)
+# Taxa names
+taxa_names(physeq)
+
+# Rank names = name of taxonomic levels available
+rank_names(physeq)
+# Name of metadata column (sample variable)
+sample_variables(physeq)
+
+# Visualize OTU table (col samples, rows ASVs) 
+otu_table(physeq)[1:5,1:5]
+# Visualize tax table (col taxonomy rank, rows ASVs)
+tax_table(physeq)[1:5,1:5]
+
+# Total count of each sample (library size)
+sample_sums(physeq)
+sample_sums(physeq)[1:10]
+# Total count of each taxa (overall abundance across all samples)
+taxa_sums(physeq)[1:10]
+
+# values for variable varName in sample data
+get_variable(physeq, varName = "MyVariable")
+# Abundance of ASV 1:10 (or all OTU) in sample 1
+get_taxa(physeq, sample_names(physeq)[1])[1:10]
+# Abundance of ASV 1 in sample 1 to 10 (or all samples)
+get_sample(physeq, taxa_names(physeq)[1])[1:10]
+```
+
+Phyloseq can be used for a lot of analysis and processing:
+
+- Filter OTUs, select part of the data with prune_taxa() and their counterpart for samples
+- Rarefy counts (when needed) using rarefy_even_depth()
+- Compute alpha-diversity using estimate_richness()
+- Compute beta-diversity using distance()
+- Visualize samples using plot_ordination()
+- Overlay environmental variables (metadata) using envfit()
+- Visualize count table using plot_heatmap (useful to emphasize block structure)
+- Test effect of covariate using PERMANOVA with adonis
+- Find differentially abundant taxa with DESEQ2
+etc...
+
+Next step: explore the samples!
+See template: 16S_Analysis
