@@ -1,0 +1,96 @@
+---
+title: 'PacBio: read length'
+author: "Simon Yersin"
+date: "2024-05-07"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(ggplot2)
+
+bc2061_readLength <- read_csv("m64156_230616_031447.bc2061--bc2061.hifi_reads.fastq.gz_raw_readLength.txt",
+                               col_names = "read_length") %>% arrange(., read_length)
+
+rawdata_readLength <- bc2061_readLength
+```
+
+```{r}
+number_reads <- nrow(rawdata_readLength)
+mean_read <- round(mean(rawdata_readLength$read_length),digits = 0)
+longest_read <- max(rawdata_readLength$read_length)
+
+print(paste0("The sample has ",number_reads, " reads. The mean read length is ",mean_read, " and the longest read is ",longest_read))
+
+# "The sample has 17557 reads. The mean read length is 7329 and the longest read is 26029"
+```
+
+```{r}
+histoPlot_01 <- ggplot(rawdata_readLength,aes(x=read_length))+
+    geom_histogram(binwidth = 500)+theme_classic()+
+    geom_vline(xintercept = 5000,color="blue")+
+    lims(x=c(-250,longest_read))
+histoPlot_01
+#Blue line: size of rRNA operon (~5kb repeat)
+```
+
+
+```{r}
+##-------------------------2. Here we calculate the which amount half of the sequencing output is 
+rawdata_readLength$Cumsum_forward <- cumsum(rawdata_readLength$read_length)
+rawdata_readLength$Cumsum_reverse <- max(rawdata_readLength$Cumsum_forward) - cumsum(rawdata_readLength$read_length)
+
+Half_sequencing_output <- max(rawdata_readLength$Cumsum_forward)/2
+
+print(paste0("The total number of sequenced bases is ",max(rawdata_readLength$Cumsum_forward)," and half of that is ",Half_sequencing_output))
+```
+
+```{r}
+##-------------------------3. Here we plot the histogram and the cumulative summary
+
+cumSumPlot_01 <- ggplot(rawdata_readLength,aes(x=read_length,y=Cumsum_forward))+
+    geom_point()+theme_classic()+
+    geom_vline(xintercept = 5000,color="blue")+
+    geom_hline(yintercept = Half_sequencing_output,color="red")+
+    labs(y="Cummulative read length")+
+    lims(x=c(-250,longest_read))
+
+cumSumPlot_01
+# Red line: half of all seuquencing output, estimation for N50
+```
+
+# Read filtering calculations
+```{r}
+##-------------------------1. total sequenced bases
+
+print(paste0("The total number of sequenced bases is ",max(rawdata_readLength$Cumsum_forward)))
+```
+
+```{r}
+##-------------------------3. Here we calculate the which amount half of the sequencing output is 
+sample_name="bc2055"
+genome_size= 2300000 #MODIFY!!!
+expected_genome_coverage=50
+bases_needed <- genome_size*expected_genome_coverage
+
+print(paste0("The total number of bases needed for ",expected_genome_coverage,"x coverage of a ",genome_size," bp genome are  ",bases_needed))
+```
+
+```{r}
+bc2055F_readLength <- read_csv("m64156_230616_031447.bc2055--bc2055.hifi_reads.fastq.gz_filtered_readLength.txt",
+                               col_names = "read_length") %>% arrange(., read_length)
+
+filtered_readLength <- bc2055F_readLength
+
+number_reads <- nrow(filtered_readLength)
+mean_read <- round(mean(filtered_readLength$read_length),digits = 0)
+longest_read <- max(filtered_readLength$read_length)
+
+print(paste0("The sample has ",number_reads, " reads. The mean read length is ",mean_read, " and the longest read is ",longest_read))
+
+# "The sample has 17557 reads. The mean read length is 7329 and the longest read is 26029"
+```
